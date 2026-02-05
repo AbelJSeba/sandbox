@@ -1,6 +1,7 @@
 package fort
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"fmt"
@@ -21,14 +22,14 @@ type Executor struct {
 
 // ExecutorConfig holds executor configuration
 type ExecutorConfig struct {
-	Runtime          string        // runc, runsc (gVisor), kata
+	Runtime          string // runc, runsc (gVisor), kata
 	DefaultMemoryMB  int
 	DefaultCPU       float64
-	DefaultTimeout   int           // seconds
+	DefaultTimeout   int // seconds
 	MaxMemoryMB      int
 	MaxCPU           float64
 	MaxTimeout       time.Duration
-	MaxPIDs          int           // Maximum number of processes
+	MaxPIDs          int // Maximum number of processes
 	ReadOnlyRootfs   bool
 	NoNewPrivileges  bool
 	DropCapabilities []string
@@ -234,6 +235,9 @@ func (e *Executor) Execute(ctx context.Context, req *Request, synthesis *Synthes
 		ImageID:     imageID,
 	}
 
+	// Capture output artifacts if the sandbox wrote files into /app/output.
+	result.OutputFiles = e.collectOutputFiles(containerID)
+
 	// Truncate output if too long
 	const maxOutput = 100 * 1024 // 100KB
 	if len(result.Stdout) > maxOutput {
@@ -244,6 +248,58 @@ func (e *Executor) Execute(ctx context.Context, req *Request, synthesis *Synthes
 	}
 
 	return result, nil
+}
+
+func (e *Executor) collectOutputFiles(containerID string) []OutputFile {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	reader, _, err := e.docker.CopyFromContainer(ctx, containerID, "/app/output")
+	if err != nil {
+		return nil
+	}
+	defer reader.Close()
+
+	tr := tar.NewReader(reader)
+	files := make([]OutputFile, 0)
+	const maxFiles = 20
+	const previewLimit = 2048
+
+	for len(files) < maxFiles {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		if hdr == nil || hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		previewBuf := make([]byte, previewLimit)
+		n, _ := io.ReadFull(tr, previewBuf)
+		if n < 0 {
+			n = 0
+		}
+
+		if hdr.Size > int64(n) {
+			_, _ = io.CopyN(io.Discard, tr, hdr.Size-int64(n))
+		}
+
+		preview := strings.TrimSpace(string(previewBuf[:n]))
+		if len(preview) == previewLimit {
+			preview += "\n... (truncated)"
+		}
+
+		files = append(files, OutputFile{
+			Path:    hdr.Name,
+			Size:    hdr.Size,
+			Preview: preview,
+		})
+	}
+
+	return files
 }
 
 // stdCopy handles Docker's multiplexed stdout/stderr stream

@@ -72,6 +72,12 @@ export GROQ_API_KEY=gsk_...            # Groq
 # Analyze without executing
 ./fort -mode analyze -file main.go
 
+# Full sandbox flow + LLM artifact review
+./fort -mode sandbox -file script.py -verbose
+
+# Epic showcase workload (strict sandbox defaults)
+./fort -mode sandbox -file examples/epic_sandbox_showcase.py -purpose "Epic sandbox demo" -verbose
+
 # Quick security check (no LLM needed)
 ./fort -mode quick-validate -code 'import os; os.system("rm -rf /")'
 
@@ -137,7 +143,7 @@ Usage: fort [options]
 
 Modes:
   -mode string
-        Mode: execute, analyze, validate, quick-validate, init-config (default "execute")
+        Mode: execute, analyze, validate, quick-validate, report, sandbox, init-config (default "execute")
 
 Input:
   -file string
@@ -204,6 +210,44 @@ Output:
 ```bash
 ./fort -mode validate -file untrusted_script.py
 ```
+
+### Full Sandbox Pipeline with LLM Result Analysis
+```bash
+./fort -mode sandbox -file untrusted_script.py -verbose
+```
+
+This mode runs:
+1. LLM code analysis
+2. Container synthesis/build
+3. Sandboxed execution
+4. LLM parsing of execution artifacts:
+   logs (`stdout`/`stderr`), output files captured from `/app/output`, and pipeline activity/phases
+
+### Epic Sandbox Showcase
+Run the included showcase script:
+
+```bash
+./fort -mode sandbox \
+  -file examples/epic_sandbox_showcase.py \
+  -purpose "Demonstrate sandbox controls and post-exec LLM review" \
+  -verbose
+```
+
+For artifact-heavy output file parsing (in addition to logs/activity), use:
+
+```bash
+./fort -config examples/fort.sandbox-artifacts.yml \
+  -mode sandbox \
+  -file examples/epic_sandbox_showcase.py \
+  -purpose "Artifact-rich sandbox demo" \
+  -verbose
+```
+
+What to expect:
+1. Normal compute succeeds.
+2. Network attempt is blocked when `allow_network=false`.
+3. Privileged write attempt (`/etc/...`) is denied.
+4. LLM result analysis summarizes pipeline phases, logs, output files, and security implications.
 
 ### Quick Static Check (No API Key Needed)
 ```bash

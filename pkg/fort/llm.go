@@ -13,6 +13,19 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+// SandboxExecutionReview is the LLM-generated interpretation of sandbox artifacts.
+type SandboxExecutionReview struct {
+	OverallAssessment string   `json:"overall_assessment"`
+	RiskLevel         string   `json:"risk_level"`
+	Confidence        float64  `json:"confidence"`
+	Summary           string   `json:"summary"`
+	PipelineFindings  []string `json:"pipeline_findings,omitempty"`
+	LogFindings       []string `json:"log_findings,omitempty"`
+	FileFindings      []string `json:"file_findings,omitempty"`
+	ActivityFindings  []string `json:"activity_findings,omitempty"`
+	Recommendations   []string `json:"recommendations,omitempty"`
+}
+
 // LLMClient abstracts LLM interactions for code analysis
 type LLMClient interface {
 	Analyze(ctx context.Context, code, language, purpose string) (*AnalysisResult, error)
@@ -82,13 +95,13 @@ Return ONLY valid JSON, no markdown or explanation.`
 		return nil, fmt.Errorf("LLM request failed: %w", err)
 	}
 
-	var result AnalysisResult
 	content = extractJSON(content)
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
+	result, err := parseAnalysisResult(content)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
 	}
 
-	return &result, nil
+	return result, nil
 }
 
 // Synthesize generates container configuration using LLM
@@ -419,12 +432,29 @@ func (c *OpenAILLMClient) createChatCompletion(
 
 	resp, err := c.client.CreateChatCompletion(ctx, req)
 	if err != nil {
+		if forceJSONObject && isUnsupportedResponseFormatError(err) {
+			req.ResponseFormat = nil
+			resp, err = c.client.CreateChatCompletion(ctx, req)
+		}
+	}
+	if err != nil {
 		return "", err
 	}
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("no response from LLM")
 	}
 	return resp.Choices[0].Message.Content, nil
+}
+
+func isUnsupportedResponseFormatError(err error) bool {
+	var apiErr *openai.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+
+	msg := strings.ToLower(apiErr.Message)
+	return strings.Contains(msg, "response_format") &&
+		(strings.Contains(msg, "not supported") || strings.Contains(msg, "invalid parameter"))
 }
 
 func (c *OpenAILLMClient) createCompletion(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
@@ -515,4 +545,317 @@ func shouldFallbackToChatEndpoint(err error) bool {
 		return true
 	}
 	return false
+}
+
+// ReviewSandboxExecution asks the LLM to analyze execution artifacts (logs, output files, phases).
+func (c *OpenAILLMClient) ReviewSandboxExecution(
+	ctx context.Context,
+	execution *Execution,
+	execErr error,
+) (*SandboxExecutionReview, error) {
+	systemPrompt := `You are a sandbox execution auditor.
+You will receive execution artifacts from an isolated sandbox run.
+Analyze these artifacts and return ONLY valid JSON:
+{
+  "overall_assessment": "pass|caution|fail",
+  "risk_level": "none|low|medium|high|critical",
+  "confidence": 0.0,
+  "summary": "brief summary",
+  "pipeline_findings": ["list of findings about analyze/build/execute phases"],
+  "log_findings": ["insights from stdout/stderr"],
+  "file_findings": ["insights from output files/artifacts"],
+  "activity_findings": ["sandbox activity or behavior observations"],
+  "recommendations": ["practical next steps"]
+}
+Rules:
+- Base conclusions only on provided artifacts.
+- If evidence is missing, say so in findings.
+- Keep recommendations concrete and security-focused.`
+
+	payload := buildExecutionReviewPayload(execution, execErr)
+	artifactsJSON, _ := json.Marshal(payload)
+	userPrompt := fmt.Sprintf("Execution artifacts JSON:\n%s", string(artifactsJSON))
+
+	content, err := c.generateText(ctx, systemPrompt, userPrompt, false)
+	if err != nil {
+		return nil, fmt.Errorf("LLM request failed: %w", err)
+	}
+	content = extractJSON(content)
+
+	var review SandboxExecutionReview
+	if err := json.Unmarshal([]byte(content), &review); err != nil {
+		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
+	}
+	return &review, nil
+}
+
+func parseAnalysisResult(content string) (*AnalysisResult, error) {
+	var direct AnalysisResult
+	if err := json.Unmarshal([]byte(content), &direct); err == nil {
+		normalizeAnalysisResult(&direct)
+		return &direct, nil
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		return nil, err
+	}
+
+	result := &AnalysisResult{
+		DetectedLanguage:     pickFirstString(raw, "detected_language", "language"),
+		DetectedRuntime:      pickFirstString(raw, "detected_runtime", "runtime"),
+		DetectedFrameworks:   parseStringSlice(raw["detected_frameworks"]),
+		InferredDependencies: parseAnalysisDependencies(raw["inferred_dependencies"]),
+		Complexity:           parseComplexity(raw["complexity"]),
+		EstimatedRuntime:     pickFirstString(raw, "estimated_runtime"),
+		PotentialRisks:       parseStringSlice(raw["potential_risks"]),
+		RequiresReview:       parseBool(raw["requires_review"]),
+		Summary:              pickFirstString(raw, "summary", "inferred_purpose"),
+		DetectedEntryPoints:  parseEntryPoints(raw["detected_entry_points"]),
+		RecommendedEntry:     pickFirstString(raw, "recommended_entry"),
+	}
+
+	if result.EstimatedRuntime == "" {
+		if m, ok := raw["complexity"].(map[string]interface{}); ok {
+			result.EstimatedRuntime = pickFirstString(m, "estimated_runtime")
+		}
+	}
+
+	normalizeAnalysisResult(result)
+	return result, nil
+}
+
+func normalizeAnalysisResult(result *AnalysisResult) {
+	if result == nil {
+		return
+	}
+	if result.DetectedLanguage == "" {
+		result.DetectedLanguage = "unknown"
+	}
+	if result.DetectedRuntime == "" {
+		result.DetectedRuntime = "unknown"
+	}
+	if result.EstimatedRuntime == "" {
+		result.EstimatedRuntime = "unknown"
+	}
+	if result.Complexity == "" {
+		result.Complexity = ComplexityModerate
+	}
+	if result.RecommendedEntry == "" && len(result.DetectedEntryPoints) > 0 {
+		result.RecommendedEntry = result.DetectedEntryPoints[0]
+	}
+}
+
+func pickFirstString(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			if s := parseString(v); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func parseString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case []byte:
+		return strings.TrimSpace(string(t))
+	default:
+		return ""
+	}
+}
+
+func parseBool(v interface{}) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.EqualFold(strings.TrimSpace(t), "true")
+	default:
+		return false
+	}
+}
+
+func parseComplexity(v interface{}) Complexity {
+	switch t := v.(type) {
+	case string:
+		return normalizeComplexity(t)
+	case map[string]interface{}:
+		if s := parseString(t["level"]); s != "" {
+			return normalizeComplexity(s)
+		}
+	}
+	return ComplexityModerate
+}
+
+func normalizeComplexity(s string) Complexity {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "trivial":
+		return ComplexityTrivial
+	case "simple":
+		return ComplexitySimple
+	case "moderate":
+		return ComplexityModerate
+	case "complex":
+		return ComplexityComplex
+	case "extreme":
+		return ComplexityExtreme
+	default:
+		return ComplexityModerate
+	}
+}
+
+func parseEntryPoints(v interface{}) []string {
+	items := parseStringSlice(v)
+	if len(items) > 0 {
+		return items
+	}
+
+	raw, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+
+	points := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if m, ok := item.(map[string]interface{}); ok {
+			if name := pickFirstString(m, "name", "entry", "location"); name != "" {
+				points = append(points, name)
+			}
+		}
+	}
+	return points
+}
+
+func parseAnalysisDependencies(v interface{}) []Dependency {
+	raw, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+
+	out := make([]Dependency, 0, len(raw))
+	for _, item := range raw {
+		switch t := item.(type) {
+		case string:
+			name := strings.TrimSpace(t)
+			if name != "" {
+				out = append(out, Dependency{Name: name})
+			}
+		case map[string]interface{}:
+			dep := Dependency{
+				Name:    pickFirstString(t, "name", "package", "module"),
+				Version: pickFirstString(t, "version"),
+				Source:  pickFirstString(t, "source", "manager"),
+			}
+			if dep.Name != "" {
+				out = append(out, dep)
+			}
+		}
+	}
+	return out
+}
+
+func parseStringSlice(v interface{}) []string {
+	switch t := v.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			switch x := item.(type) {
+			case string:
+				s := strings.TrimSpace(x)
+				if s != "" {
+					out = append(out, s)
+				}
+			case map[string]interface{}:
+				if s := pickFirstString(x, "description", "title", "name", "risk", "reason"); s != "" {
+					out = append(out, s)
+					continue
+				}
+				b, _ := json.Marshal(x)
+				if len(b) > 0 {
+					out = append(out, string(b))
+				}
+			default:
+				s := strings.TrimSpace(fmt.Sprintf("%v", x))
+				if s != "" && s != "<nil>" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	case map[string]interface{}:
+		// Some models may emit an object for risks/frameworks.
+		out := make([]string, 0, len(t))
+		for k, val := range t {
+			vs := strings.TrimSpace(fmt.Sprintf("%v", val))
+			if vs == "" || vs == "<nil>" {
+				out = append(out, k)
+			} else {
+				out = append(out, fmt.Sprintf("%s: %s", k, vs))
+			}
+		}
+		return out
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	default:
+		return nil
+	}
+}
+
+func buildExecutionReviewPayload(execution *Execution, execErr error) map[string]interface{} {
+	if execution == nil {
+		return map[string]interface{}{
+			"error": "execution is nil",
+		}
+	}
+
+	payload := map[string]interface{}{
+		"request_id":      execution.Request.ID,
+		"request_policy":  execution.Request.SecurityPolicy,
+		"current_phase":   execution.Request.CurrentPhase,
+		"status":          execution.Request.Status,
+		"phases":          execution.Phases,
+		"analysis":        execution.Analysis,
+		"synthesis":       execution.Synthesis,
+		"validation":      execution.Validation,
+		"execution_error": "",
+	}
+	if execErr != nil {
+		payload["execution_error"] = execErr.Error()
+	}
+
+	if execution.Result != nil {
+		payload["result"] = map[string]interface{}{
+			"success":        execution.Result.Success,
+			"exit_code":      execution.Result.ExitCode,
+			"timed_out":      execution.Result.TimedOut,
+			"killed":         execution.Result.Killed,
+			"kill_reason":    execution.Result.KillReason,
+			"wall_time_ms":   execution.Result.WallTimeMs,
+			"stdout":         truncateForLLM(execution.Result.Stdout, 8000),
+			"stderr":         truncateForLLM(execution.Result.Stderr, 8000),
+			"output_files":   execution.Result.OutputFiles,
+			"container_id":   execution.Result.ContainerID,
+			"image_id":       execution.Result.ImageID,
+			"completed_at":   execution.Result.CompletedAt,
+			"memory_used_mb": execution.Result.MemoryUsedMB,
+			"cpu_time_ms":    execution.Result.CPUTimeMs,
+		}
+	}
+
+	return payload
+}
+
+func truncateForLLM(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	return text[:max] + "\n... (truncated)"
 }

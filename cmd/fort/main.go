@@ -32,7 +32,7 @@ const banner = `
 
 func main() {
 	var (
-		mode          = flag.String("mode", "execute", "Mode: execute, analyze, validate, quick-validate, report, init-config")
+		mode          = flag.String("mode", "execute", "Mode: execute, analyze, validate, quick-validate, report, sandbox, init-config")
 		file          = flag.String("file", "", "Path to code file (or - for stdin)")
 		code          = flag.String("code", "", "Inline code to execute")
 		lang          = flag.String("lang", "", "Language hint (python, go, js, etc.)")
@@ -113,7 +113,7 @@ func main() {
 
 	// Resolve API key
 	apiKey := cfg.ResolveAPIKey()
-	if apiKey == "" && *mode != "quick-validate" {
+	if apiKey == "" && modeRequiresLLM(*mode) {
 		providerInfo := fort.KnownProviders[cfg.LLM.Provider]
 		envHint := "OPENAI_API_KEY"
 		if providerInfo.EnvKey != "" {
@@ -122,14 +122,16 @@ func main() {
 		fatal("No API key found. Set %s environment variable or add api_key to config file", envHint)
 	}
 
-	sourceCode, err := getSourceCode(*file, *code)
-	if err != nil {
-		fatal("Failed to get source code: %v", err)
-	}
-
-	if sourceCode == "" && *mode != "init-config" {
-		flag.Usage()
-		fatal("No code provided. Use -file or -code")
+	sourceCode := ""
+	if modeRequiresSourceCode(*mode) {
+		sourceCode, err = getSourceCode(*file, *code)
+		if err != nil {
+			fatal("Failed to get source code: %v", err)
+		}
+		if sourceCode == "" {
+			flag.Usage()
+			fatal("No code provided. Use -file or -code")
+		}
 	}
 
 	// Convert config to agent config
@@ -140,6 +142,17 @@ func main() {
 		fmt.Printf("Model: %s\n", cfg.ResolveModel())
 		fmt.Printf("Base URL: %s\n", cfg.ResolveBaseURL())
 		fmt.Println()
+	}
+
+	ctx := context.Background()
+
+	switch *mode {
+	case "report":
+		runReport(ctx, agentConfig, sourceCode, *lang, *purpose, *verbose)
+		return
+	case "sandbox":
+		runSandbox(ctx, agentConfig, sourceCode, *lang, *purpose, *timeout, *memoryMB, *allowNet, *verbose, *jsonOutput)
+		return
 	}
 
 	agent, err := fort.NewAgent(agentConfig)
@@ -168,8 +181,6 @@ func main() {
 		req.SecurityPolicy.AllowNetwork = true
 	}
 
-	ctx := context.Background()
-
 	switch *mode {
 	case "quick-validate":
 		runQuickValidate(agent, sourceCode, *jsonOutput)
@@ -179,9 +190,6 @@ func main() {
 
 	case "analyze":
 		runAnalyze(ctx, agent, req, *verbose, *jsonOutput)
-
-	case "report":
-		runReport(ctx, agentConfig, sourceCode, *lang, *purpose, *verbose)
 
 	case "execute":
 		runExecute(ctx, agent, req, *verbose, *jsonOutput)
@@ -217,6 +225,24 @@ func getSourceCode(file, code string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func modeRequiresLLM(mode string) bool {
+	switch mode {
+	case "quick-validate", "init-config":
+		return false
+	default:
+		return true
+	}
+}
+
+func modeRequiresSourceCode(mode string) bool {
+	switch mode {
+	case "init-config":
+		return false
+	default:
+		return true
+	}
 }
 
 func runQuickValidate(agent *fort.Agent, code string, jsonOutput bool) {
@@ -452,6 +478,156 @@ func runExecute(ctx context.Context, agent *fort.Agent, req *fort.Request, verbo
 	}
 
 	if execution.Result != nil && !execution.Result.Success {
+		os.Exit(execution.Result.ExitCode)
+	}
+}
+
+func runSandbox(
+	ctx context.Context,
+	config fort.AgentConfig,
+	code, lang, purpose string,
+	timeoutSec, memoryMB int,
+	allowNetwork, verbose, jsonOutput bool,
+) {
+	if !jsonOutput {
+		fmt.Println("\n[Sandbox] Full pipeline: LLM analysis -> build -> sandbox execution -> LLM result analysis")
+	}
+
+	agent, err := fort.NewAgent(config)
+	if err != nil {
+		fatal("Failed to create sandbox agent: %v", err)
+	}
+	defer agent.Close()
+
+	policy := config.DefaultPolicy
+	policy.AllowNetwork = allowNetwork
+	if timeoutSec > 0 {
+		policy.MaxTimeoutSec = timeoutSec
+	}
+	if memoryMB > 0 {
+		policy.MaxMemoryMB = memoryMB
+	}
+
+	req := &fort.Request{
+		ID:             generateID(),
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+		SubmittedBy:    "sandbox-user",
+		SourceType:     fort.SourceInline,
+		SourceContent:  code,
+		Language:       lang,
+		Purpose:        purpose,
+		MaxTimeoutSec:  timeoutSec,
+		MaxMemoryMB:    memoryMB,
+		AllowNetwork:   allowNetwork,
+		SecurityPolicy: policy,
+		Status:         fort.StatusPending,
+		CurrentPhase:   fort.PhaseAnalysis,
+	}
+
+	if verbose && !jsonOutput {
+		fmt.Println("  -> Running secure execution pipeline...")
+	}
+
+	execution, execErr := agent.Execute(ctx, req)
+
+	var llm *fort.OpenAILLMClient
+	if config.LLMBaseURL != "" {
+		llm = fort.NewOpenAILLMClientWithBaseURL(config.LLMAPIKey, config.LLMModel, config.LLMBaseURL)
+	} else {
+		llm = fort.NewOpenAILLMClient(config.LLMAPIKey, config.LLMModel)
+	}
+
+	var review *fort.SandboxExecutionReview
+	review, reviewErr := llm.ReviewSandboxExecution(ctx, execution, execErr)
+
+	if jsonOutput {
+		output := map[string]interface{}{
+			"execution":        execution,
+			"execution_error":  "",
+			"llm_review":       review,
+			"llm_review_error": "",
+		}
+		if execErr != nil {
+			output["execution_error"] = execErr.Error()
+		}
+		if reviewErr != nil {
+			output["llm_review_error"] = reviewErr.Error()
+		}
+		printJSON(output)
+		if execErr != nil {
+			os.Exit(1)
+		}
+		if execution != nil && execution.Result != nil && !execution.Result.Success {
+			os.Exit(execution.Result.ExitCode)
+		}
+		return
+	}
+
+	if execution != nil {
+		fmt.Println()
+		fmt.Println("Pipeline Phases:")
+		for _, phase := range execution.Phases {
+			icon := "✅"
+			if !phase.Success {
+				icon = "❌"
+			}
+			fmt.Printf("  %s %s\n", icon, phase.Phase)
+			if phase.Error != "" && verbose {
+				fmt.Printf("     Error: %s\n", phase.Error)
+			}
+		}
+
+		if execution.Result != nil {
+			fmt.Println("\nSandbox Execution:")
+			fmt.Printf("  Success: %t\n", execution.Result.Success)
+			fmt.Printf("  Exit code: %d\n", execution.Result.ExitCode)
+			fmt.Printf("  Timed out: %t\n", execution.Result.TimedOut)
+			if execution.Result.KillReason != "" {
+				fmt.Printf("  Kill reason: %s\n", execution.Result.KillReason)
+			}
+			fmt.Printf("  Wall time: %dms\n", execution.Result.WallTimeMs)
+
+			if len(execution.Result.OutputFiles) > 0 {
+				fmt.Println("  Output files:")
+				for _, f := range execution.Result.OutputFiles {
+					fmt.Printf("    - %s (%d bytes)\n", f.Path, f.Size)
+				}
+			}
+
+			if execution.Result.Stdout != "" && verbose {
+				fmt.Println("\n--- STDOUT ---")
+				fmt.Println(execution.Result.Stdout)
+			}
+			if execution.Result.Stderr != "" && verbose {
+				fmt.Println("\n--- STDERR ---")
+				fmt.Println(execution.Result.Stderr)
+			}
+		}
+	}
+
+	if reviewErr != nil {
+		fmt.Printf("\nLLM result analysis failed: %v\n", reviewErr)
+	} else if review != nil {
+		fmt.Println("\nLLM Result Analysis:")
+		fmt.Printf("  Assessment: %s\n", review.OverallAssessment)
+		fmt.Printf("  Risk level: %s\n", review.RiskLevel)
+		fmt.Printf("  Confidence: %.0f%%\n", review.Confidence*100)
+		fmt.Printf("  Summary: %s\n", review.Summary)
+
+		if len(review.Recommendations) > 0 {
+			fmt.Println("  Recommendations:")
+			for _, r := range review.Recommendations {
+				fmt.Printf("    - %s\n", r)
+			}
+		}
+	}
+
+	if execErr != nil {
+		fmt.Printf("\n❌ Sandbox pipeline failed: %v\n", execErr)
+		os.Exit(1)
+	}
+	if execution != nil && execution.Result != nil && !execution.Result.Success {
 		os.Exit(execution.Result.ExitCode)
 	}
 }

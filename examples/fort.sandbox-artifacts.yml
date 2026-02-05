@@ -1,0 +1,13 @@
+# Demo-oriented override config to capture output artifacts from sandbox runs.
+# Use with: ./fort -config examples/fort.sandbox-artifacts.yml -mode sandbox ...
+#
+# This keeps network disabled, but allows write operations in the sandbox so
+# /app/output artifacts can be produced and later parsed by LLM analysis.
+security:
+  allow_network: false
+  allow_file_write: true
+  require_validate: true
+
+execution:
+  timeout_sec: 90
+  memory_mb: 384

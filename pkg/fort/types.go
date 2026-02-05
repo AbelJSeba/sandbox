@@ -63,41 +63,41 @@ const (
 
 // Request represents a code execution request
 type Request struct {
-	ID            string            `json:"id"`
-	CreatedAt     time.Time         `json:"created_at"`
-	UpdatedAt     time.Time         `json:"updated_at"`
-	SubmittedBy   string            `json:"submitted_by"`
-	SourceType    SourceType        `json:"source_type"`
-	SourceContent string            `json:"source_content"`
-	Language      string            `json:"language,omitempty"`
-	Purpose       string            `json:"purpose,omitempty"`
-	MaxTimeoutSec int               `json:"max_timeout_sec,omitempty"`
-	MaxMemoryMB   int               `json:"max_memory_mb,omitempty"`
-	MaxCPU        float64           `json:"max_cpu,omitempty"`
-	AllowNetwork  bool              `json:"allow_network,omitempty"`
-	SecurityPolicy SecurityPolicy   `json:"security_policy,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	Status        ExecStatus        `json:"status"`
-	CurrentPhase  Phase             `json:"current_phase"`
+	ID             string            `json:"id"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	SubmittedBy    string            `json:"submitted_by"`
+	SourceType     SourceType        `json:"source_type"`
+	SourceContent  string            `json:"source_content"`
+	Language       string            `json:"language,omitempty"`
+	Purpose        string            `json:"purpose,omitempty"`
+	MaxTimeoutSec  int               `json:"max_timeout_sec,omitempty"`
+	MaxMemoryMB    int               `json:"max_memory_mb,omitempty"`
+	MaxCPU         float64           `json:"max_cpu,omitempty"`
+	AllowNetwork   bool              `json:"allow_network,omitempty"`
+	SecurityPolicy SecurityPolicy    `json:"security_policy,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	Status         ExecStatus        `json:"status"`
+	CurrentPhase   Phase             `json:"current_phase"`
 }
 
 // SecurityPolicy defines execution security constraints
 type SecurityPolicy struct {
-	AllowNetwork       bool     `json:"allow_network"`
-	AllowFileWrite     bool     `json:"allow_file_write"`
-	AllowFileRead      bool     `json:"allow_file_read"`
-	AllowedPaths       []string `json:"allowed_paths,omitempty"`
-	BlockedPaths       []string `json:"blocked_paths,omitempty"`
-	AllowedDomains     []string `json:"allowed_domains,omitempty"`
-	BlockedDomains     []string `json:"blocked_domains,omitempty"`
-	MaxMemoryMB        int      `json:"max_memory_mb,omitempty"`
-	MaxCPU             float64  `json:"max_cpu,omitempty"`
-	MaxTimeoutSec      int      `json:"max_timeout_sec,omitempty"`
-	MaxOutputBytes     int      `json:"max_output_bytes,omitempty"`
-	AllowedLanguages   []string `json:"allowed_languages,omitempty"`
-	BlockedPatterns    []string `json:"blocked_patterns,omitempty"`
-	RequireApproval    bool     `json:"require_approval,omitempty"`
-	SandboxLevel       string   `json:"sandbox_level,omitempty"`
+	AllowNetwork     bool     `json:"allow_network"`
+	AllowFileWrite   bool     `json:"allow_file_write"`
+	AllowFileRead    bool     `json:"allow_file_read"`
+	AllowedPaths     []string `json:"allowed_paths,omitempty"`
+	BlockedPaths     []string `json:"blocked_paths,omitempty"`
+	AllowedDomains   []string `json:"allowed_domains,omitempty"`
+	BlockedDomains   []string `json:"blocked_domains,omitempty"`
+	MaxMemoryMB      int      `json:"max_memory_mb,omitempty"`
+	MaxCPU           float64  `json:"max_cpu,omitempty"`
+	MaxTimeoutSec    int      `json:"max_timeout_sec,omitempty"`
+	MaxOutputBytes   int      `json:"max_output_bytes,omitempty"`
+	AllowedLanguages []string `json:"allowed_languages,omitempty"`
+	BlockedPatterns  []string `json:"blocked_patterns,omitempty"`
+	RequireApproval  bool     `json:"require_approval,omitempty"`
+	SandboxLevel     string   `json:"sandbox_level,omitempty"`
 }
 
 // DefaultSecurityPolicy returns a restrictive default policy
@@ -116,12 +116,12 @@ func DefaultSecurityPolicy() SecurityPolicy {
 
 // Execution tracks a complete execution lifecycle
 type Execution struct {
-	Request    Request          `json:"request"`
-	Phases     []PhaseRecord    `json:"phases"`
-	Analysis   *AnalysisResult  `json:"analysis,omitempty"`
-	Synthesis  *SynthesisResult `json:"synthesis,omitempty"`
+	Request    Request           `json:"request"`
+	Phases     []PhaseRecord     `json:"phases"`
+	Analysis   *AnalysisResult   `json:"analysis,omitempty"`
+	Synthesis  *SynthesisResult  `json:"synthesis,omitempty"`
 	Validation *ValidationResult `json:"validation,omitempty"`
-	Result     *ExecResult      `json:"result,omitempty"`
+	Result     *ExecResult       `json:"result,omitempty"`
 }
 
 // PhaseRecord tracks timing/status for each pipeline phase
@@ -135,17 +135,17 @@ type PhaseRecord struct {
 
 // AnalysisResult contains code analysis output
 type AnalysisResult struct {
-	DetectedLanguage     string           `json:"detected_language"`
-	DetectedRuntime      string           `json:"detected_runtime"`
-	DetectedFrameworks   []string         `json:"detected_frameworks,omitempty"`
-	InferredDependencies []Dependency     `json:"inferred_dependencies,omitempty"`
-	Complexity           Complexity       `json:"complexity"`
-	EstimatedRuntime     string           `json:"estimated_runtime"`
-	PotentialRisks       []string         `json:"potential_risks,omitempty"`
-	RequiresReview       bool             `json:"requires_review"`
-	Summary              string           `json:"summary"`
-	DetectedEntryPoints  []string         `json:"detected_entry_points,omitempty"`
-	RecommendedEntry     string           `json:"recommended_entry,omitempty"`
+	DetectedLanguage     string       `json:"detected_language"`
+	DetectedRuntime      string       `json:"detected_runtime"`
+	DetectedFrameworks   []string     `json:"detected_frameworks,omitempty"`
+	InferredDependencies []Dependency `json:"inferred_dependencies,omitempty"`
+	Complexity           Complexity   `json:"complexity"`
+	EstimatedRuntime     string       `json:"estimated_runtime"`
+	PotentialRisks       []string     `json:"potential_risks,omitempty"`
+	RequiresReview       bool         `json:"requires_review"`
+	Summary              string       `json:"summary"`
+	DetectedEntryPoints  []string     `json:"detected_entry_points,omitempty"`
+	RecommendedEntry     string       `json:"recommended_entry,omitempty"`
 }
 
 // Dependency represents an inferred package dependency
@@ -172,14 +172,14 @@ type SynthesisResult struct {
 
 // ValidationResult contains security validation output
 type ValidationResult struct {
-	Safe             bool                `json:"safe"`
-	RiskLevel        RiskLevel           `json:"risk_level"`
-	Confidence       float64             `json:"confidence"`
-	Findings         []SecurityFinding   `json:"findings,omitempty"`
-	PolicyViolations []PolicyViolation   `json:"policy_violations,omitempty"`
-	Recommendations  []string            `json:"recommendations,omitempty"`
-	RejectionReason  string              `json:"rejection_reason,omitempty"`
-	ReviewNotes      string              `json:"review_notes,omitempty"`
+	Safe             bool              `json:"safe"`
+	RiskLevel        RiskLevel         `json:"risk_level"`
+	Confidence       float64           `json:"confidence"`
+	Findings         []SecurityFinding `json:"findings,omitempty"`
+	PolicyViolations []PolicyViolation `json:"policy_violations,omitempty"`
+	Recommendations  []string          `json:"recommendations,omitempty"`
+	RejectionReason  string            `json:"rejection_reason,omitempty"`
+	ReviewNotes      string            `json:"review_notes,omitempty"`
 }
 
 // SecurityFinding represents a detected security issue
@@ -202,18 +202,26 @@ type PolicyViolation struct {
 
 // ExecResult contains execution output
 type ExecResult struct {
-	RequestID    string    `json:"request_id"`
-	CompletedAt  time.Time `json:"completed_at"`
-	Success      bool      `json:"success"`
-	ExitCode     int       `json:"exit_code"`
-	Stdout       string    `json:"stdout"`
-	Stderr       string    `json:"stderr"`
-	MemoryUsedMB int       `json:"memory_used_mb,omitempty"`
-	CPUTimeMs    int64     `json:"cpu_time_ms,omitempty"`
-	WallTimeMs   int64     `json:"wall_time_ms"`
-	TimedOut     bool      `json:"timed_out,omitempty"`
-	Killed       bool      `json:"killed,omitempty"`
-	KillReason   string    `json:"kill_reason,omitempty"`
-	ContainerID  string    `json:"container_id,omitempty"`
-	ImageID      string    `json:"image_id,omitempty"`
+	RequestID    string       `json:"request_id"`
+	CompletedAt  time.Time    `json:"completed_at"`
+	Success      bool         `json:"success"`
+	ExitCode     int          `json:"exit_code"`
+	Stdout       string       `json:"stdout"`
+	Stderr       string       `json:"stderr"`
+	MemoryUsedMB int          `json:"memory_used_mb,omitempty"`
+	CPUTimeMs    int64        `json:"cpu_time_ms,omitempty"`
+	WallTimeMs   int64        `json:"wall_time_ms"`
+	TimedOut     bool         `json:"timed_out,omitempty"`
+	Killed       bool         `json:"killed,omitempty"`
+	KillReason   string       `json:"kill_reason,omitempty"`
+	ContainerID  string       `json:"container_id,omitempty"`
+	ImageID      string       `json:"image_id,omitempty"`
+	OutputFiles  []OutputFile `json:"output_files,omitempty"`
+}
+
+// OutputFile represents an output artifact captured from the sandbox container.
+type OutputFile struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	Preview string `json:"preview,omitempty"`
 }
