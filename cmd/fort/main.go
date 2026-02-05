@@ -32,7 +32,7 @@ const banner = `
 
 func main() {
 	var (
-		mode         = flag.String("mode", "execute", "Mode: execute, analyze, validate, quick-validate, init-config")
+		mode         = flag.String("mode", "execute", "Mode: execute, analyze, validate, quick-validate, report, init-config")
 		file         = flag.String("file", "", "Path to code file (or - for stdin)")
 		code         = flag.String("code", "", "Inline code to execute")
 		lang         = flag.String("lang", "", "Language hint (python, go, js, etc.)")
@@ -179,6 +179,9 @@ func main() {
 
 	case "analyze":
 		runAnalyze(ctx, agent, req, *verbose, *jsonOutput)
+
+	case "report":
+		runReport(ctx, agentConfig, sourceCode, *lang, *purpose, *verbose)
 
 	case "execute":
 		runExecute(ctx, agent, req, *verbose, *jsonOutput)
@@ -533,4 +536,60 @@ func initConfig(path string) {
 	fmt.Println("     - DeepSeek:   export DEEPSEEK_API_KEY=sk-...")
 	fmt.Println("     - Together:   export TOGETHER_API_KEY=...")
 	fmt.Println("     - Groq:       export GROQ_API_KEY=gsk_...")
+}
+
+func runReport(ctx context.Context, config fort.AgentConfig, code, lang, purpose string, verbose bool) {
+	fmt.Println("\n[Report] Generating comprehensive analysis report...")
+
+	// Create LLM client
+	var llm *fort.OpenAILLMClient
+	if config.LLMBaseURL != "" {
+		llm = fort.NewOpenAILLMClientWithBaseURL(config.LLMAPIKey, config.LLMModel, config.LLMBaseURL)
+	} else {
+		llm = fort.NewOpenAILLMClient(config.LLMAPIKey, config.LLMModel)
+	}
+
+	// Create report generator
+	reportConfig := fort.DefaultReportConfig()
+	generator := fort.NewReportGenerator(llm, reportConfig)
+
+	// Generate report
+	opts := fort.ReportOptions{
+		Language: lang,
+		Purpose:  purpose,
+	}
+
+	if verbose {
+		fmt.Println("  -> Phase 1: Code structure analysis...")
+	}
+
+	report, err := generator.GenerateReport(ctx, code, opts)
+	if err != nil {
+		fatal("Report generation failed: %v", err)
+	}
+
+	if verbose {
+		fmt.Println("  -> Phase 2: Security assessment...")
+		fmt.Println("  -> Phase 3: Capability detection...")
+		fmt.Println("  -> Phase 4: Dependency analysis...")
+		fmt.Println("  -> Phase 5: Generating recommendations...")
+		fmt.Println()
+	}
+
+	// Output JSON report
+	jsonData, err := report.ToJSON()
+	if err != nil {
+		fatal("Failed to serialize report: %v", err)
+	}
+
+	fmt.Println(string(jsonData))
+
+	// Print summary to stderr if verbose
+	if verbose {
+		fmt.Fprintln(os.Stderr, "\n--- Summary ---")
+		fmt.Fprintf(os.Stderr, "Verdict: %s\n", report.Summary.Verdict)
+		fmt.Fprintf(os.Stderr, "Security Score: %d/100\n", report.Summary.SecurityScore)
+		fmt.Fprintf(os.Stderr, "Trust Score: %d/100\n", report.Summary.TrustScore)
+		fmt.Fprintf(os.Stderr, "Findings: %d\n", len(report.Security.Findings))
+	}
 }
