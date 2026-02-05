@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/sashabaranov/go-openai"
 )
@@ -12,6 +13,7 @@ import (
 type LLMClient interface {
 	Analyze(ctx context.Context, code, language, purpose string) (*AnalysisResult, error)
 	Synthesize(ctx context.Context, code string, analysis *AnalysisResult) (*SynthesisResult, error)
+	SynthesizeProject(ctx context.Context, projectContext string, analysis *AnalysisResult) (*SynthesisResult, error)
 	Validate(ctx context.Context, code string, analysis *AnalysisResult, synthesis *SynthesisResult, policy *SecurityPolicy) (*ValidationResult, error)
 }
 
@@ -141,6 +143,93 @@ Return ONLY valid JSON, no markdown.`
 	}
 
 	return &result, nil
+}
+
+// SynthesizeProject generates container config for multi-file projects
+func (c *OpenAILLMClient) SynthesizeProject(ctx context.Context, projectContext string, analysis *AnalysisResult) (*SynthesisResult, error) {
+	systemPrompt := `You are an expert DevOps engineer creating production-quality Dockerfiles.
+Given a multi-file project analysis, generate the optimal Docker configuration.
+
+Requirements:
+1. Use multi-stage builds to minimize final image size
+2. Use appropriate base images (prefer alpine/slim variants)
+3. Create a non-root user for security
+4. Install only necessary dependencies
+5. Copy files efficiently (use .dockerignore patterns mentally)
+6. Set proper file permissions
+7. Handle the detected build system correctly (npm, pip, cargo, go mod, maven, etc.)
+8. Configure the correct entry point and run command
+
+Return a JSON object with these fields:
+- base_image: the base image to use
+- dockerfile: complete Dockerfile content (multi-stage if beneficial)
+- entry_script: optional shell script wrapper (if needed)
+- setup_script: optional setup script (if needed)
+- run_command: array of command and args to run the project
+- work_dir: working directory in container
+- environment_vars: map of environment variables
+- build_args: list of build arguments
+- recommended_memory_mb: memory limit suggestion
+- recommended_cpu: CPU limit (1.0 = 1 core)
+- recommended_timeout_sec: timeout suggestion
+
+Important Dockerfile best practices:
+- Order layers by change frequency (dependencies before code)
+- Use specific version tags, not :latest
+- Combine RUN commands to reduce layers
+- Clean up package manager caches
+- Don't store secrets in the image
+
+Return ONLY valid JSON, no markdown.`
+
+	userPrompt := fmt.Sprintf("Generate Docker configuration for this project:\n\n%s", projectContext)
+
+	resp, err := c.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model: c.model,
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
+			{Role: openai.ChatMessageRoleUser, Content: userPrompt},
+		},
+		Temperature: 0.1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("LLM request failed: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("no response from LLM")
+	}
+
+	var result SynthesisResult
+	content := resp.Choices[0].Message.Content
+
+	// Try to extract JSON from response (handle markdown code blocks)
+	content = extractJSON(content)
+
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// extractJSON extracts JSON from a response that might be wrapped in markdown
+func extractJSON(content string) string {
+	// Remove markdown code blocks if present
+	if strings.Contains(content, "```json") {
+		start := strings.Index(content, "```json") + 7
+		end := strings.LastIndex(content, "```")
+		if end > start {
+			content = content[start:end]
+		}
+	} else if strings.Contains(content, "```") {
+		start := strings.Index(content, "```") + 3
+		end := strings.LastIndex(content, "```")
+		if end > start {
+			content = content[start:end]
+		}
+	}
+	return strings.TrimSpace(content)
 }
 
 // Validate performs security validation using LLM
